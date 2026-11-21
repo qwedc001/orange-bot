@@ -10,6 +10,7 @@ import type { OrangeBot } from './bot.ts'
 import { formatLine, projectTerms } from './bot.ts'
 import type { MediaRef, OutboundPart } from './satori.ts'
 import { markdownDropsQuote, quoteBlockquote } from './qq.ts'
+import { exportMediaZip } from './export-media.ts'
 import { mentionBody, readableMentions, resolveMention, splitMentions, type MentionPiece } from './mentions.ts'
 
 const text = (value: string) => [{ type: 'text' as const, text: value }]
@@ -395,6 +396,48 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
       }
       const note = `${content.text}\n（附件就用消息里的 id 取：view_image(id)，比如 [图片 #12]。${images.length ? `${images.length} 张图片已附在下面` : '这次没能附上图片'}${failed ? `，有 ${failed} 个附件取不到` : ''}）`
       return { note, images }
+    },
+  })))
+
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: 'export_attachments',
+    description: 'Export original attachment bytes to a ZIP in this conversation workspace, without converting animated images. Select attachment ids OR seq + forward path (default "1") to export all images in a merged forward, including nested ones. Checks the same conversation scope as view_image before any download. Streams one download at a time, deduplicates by SHA256, and returns exact counts, failures and a workspace path. Limits: 500 attachments, 30 MiB each, 512 MiB transferred total, 60 seconds per download; HTTPS QQ image CDNs only. Does not expose private cache paths or signed URLs. A partial export is explicitly reported; do not describe it as complete.',
+    parameters: {
+      ids: { type: 'array', items: { type: 'integer' }, description: 'Attachment ids from [图片 #id] / [文件 #id]. Mutually exclusive with seq/forward.' },
+      seq: { type: 'integer', description: 'Message containing the merged forward to export.' },
+      forward: { type: 'string', description: 'Forward path, e.g. "1" or "1.2"; requires seq.' },
+    },
+    output: TEXT_OUT,
+    async execute(args: any, exec: any) {
+      const b = bot()
+      const own = roleOf(exec)
+      if (!own.conv) throw new Error('this session is not bound to a conversation')
+      const byIds = args.ids !== undefined
+      if (byIds === (args.seq !== undefined) || (byIds && args.forward !== undefined)) throw new Error('pass ids OR seq + forward')
+      let ids: number[]
+      if (byIds) {
+        if (!Array.isArray(args.ids)) throw new Error('ids must be an array')
+        ids = args.ids
+      } else {
+        const m = b.store.bySeq(Number(args.seq))
+        if (!m) throw new Error('unknown message')
+        assertConv(own, m.conv)
+        ids = await b.forwardImageIds(m, String(args.forward ?? '1'))
+      }
+      if (!ids.length || ids.length > 500 || ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) throw new Error('select 1 to 500 valid attachment ids')
+      // Authorize the entire selection first, not inside the streaming loop.
+      const rows = ids.map((id) => {
+        const row = b.store.media(id)
+        if (!row) throw new Error('unknown attachment')
+        assertConv(own, row.conv)
+        return row
+      })
+      const selected = new Map(rows.map((row) => [row.id, row]))
+      const result = await exportMediaZip({
+        workspace: b.workspaceOf(own.conv), rows,
+        resolve: (row, consume) => b.mediaUrl(selected.get(row.id)!, consume),
+      })
+      return JSON.stringify(result)
     },
   })))
 

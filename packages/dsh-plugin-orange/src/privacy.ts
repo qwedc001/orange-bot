@@ -37,7 +37,7 @@ const SENSITIVE: { pattern: RegExp, what: string }[] = [
 /** Tool names whose arguments may reach a file, the shell, or recorded chats. */
 export const GUARDED_TOOLS = new Set([
   'bash', 'read', 'write', 'edit', 'glob', 'grep', 'run_code',
-  'view_image', 'get_forward', 'chat_history', 'chat_search', 'list_conversations',
+  'view_image', 'export_attachments', 'get_forward', 'chat_history', 'chat_search', 'list_conversations',
 ])
 
 /** Why this call is refused, or undefined when nothing private is referenced. */

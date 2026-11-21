@@ -45,6 +45,21 @@ QQ 群 ─┬─ 官方 bot（koishi / adapter-qq，`qq:<openid>`）─┐
 | `src/web.ts` `src/client/` | 面板 API（`/orange-api/*`）与面板前端（React） |
 | `src/github.ts` `src/llm.ts` `src/log.ts` `src/backfill.ts` | PR/issue 通知转任务、便宜模型直连调用、日志、用量回填 |
 
+## 原始附件导出
+
+`view_image` 用于查看图片，不是原件归档接口。需要下载原始附件或保留动图时使用：
+
+- `export_attachments(ids=[12, 13])`：按消息中的稳定附件 id 选择。
+- `export_attachments(seq=2500, forward="1")`：导出该合并转发及其嵌套转发的全部图片；也支持 `"1.2"` 这样的子树。枚举不受聊天预览条数限制，超限会明确失败而非截断。
+
+权限与 `view_image` 一致：先检查整个选择属于调用会话的授权范围，再下载；输出固定在调用会话配置工作区的随机 `attachment-export-*` 目录，不接受任意输出路径。只访问 HTTPS 的 `multimedia.nt.qq.com` / `*.qpic.cn` 原始地址，不接受本地路径、data URL、其它主机或重定向；不导出签名 URL 或私有缓存路径。其它来源会明确计入失败。
+
+每次仅下载一项（并发 1），逐块原字节写入 STORE ZIP，不解码、不转码，GIF / PNG（含 APNG）/ JPEG / WebP 扩展名按字节签名识别；其它非图片附件按 `.bin` 原字节保存。按 SHA256 内容去重，相同 id 不重复下载。ZIP 内附 `manifest.json`，包括每个输入 id 对应文件名、字节数、SHA256、重复指向与失败项。计数满足 `requested = exported + duplicates + failed.length`，`exported` 不包括 manifest。部分失败不得宣称全部完成；全部失败不保留 ZIP。
+
+上限为 500 个输入附件、8 层转发、5000 条转发消息、每项 30 MiB、累计传输 512 MiB（含重复与失败尝试）、每次下载 60 秒。失败的流和内容重复项会回滚 ZIP，只有完成的归档才从 `.partial` 发布。导出文件需由操作者按工作区保留策略清理。
+
+定向回归（Node 24）：`pnpm --filter dsh-plugin-orange test`。此接口需要安装包含该实现的插件并重新加载宿主后才会出现在运行中的工具清单中；本地构建不会更新已有实例。
+
 ## 前置条件
 
 1. **DeepSeek Harness**（`dsh`），插件的 peer 依赖是 `@deepseek-ai/cordis`、`@deepseek-ai/schemastery`、`@deepseek-ai/dsh-tools`、`@deepseek-ai/dsh-llm`。
