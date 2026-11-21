@@ -130,7 +130,8 @@ export async function exportMediaZip(options: {
         const start = zip.offset
         const signal = AbortSignal.timeout(60_000)
         const response = await (options.fetcher ?? fetch)(url, { signal, redirect: 'error' })
-        if (!response.ok || !response.body) {
+        // No Range was requested: a partial response is not the original attachment.
+        if (response.status !== 200 || response.headers.has('content-range') || !response.body) {
           await response.body?.cancel()
           throw new Error('media download failed')
         }

@@ -87,6 +87,14 @@ test('partial failure counts occurrences accurately and exposes no signed URL', 
   unzip(result.path)
 })
 
+test('unsolicited partial HTTP responses cannot be mistaken for complete originals', async () => {
+  const root = await workspace()
+  await assert.rejects(exportMediaZip({ workspace: root, rows: [row(1)], resolve,
+    fetcher: async () => new Response(gif, { status: 206, headers: { 'content-range': 'bytes 0-62/500' } }),
+  }), /no original/)
+  assert.deepEqual(await readdir(root), [])
+})
+
 test('all failed exports remove the partial ZIP and directory', async () => {
   const root = await workspace()
   await assert.rejects(exportMediaZip({ workspace: root, rows: [row(1)], resolve, fetcher: async () => new Response('{"retcode":-1}') }), /no original/)
