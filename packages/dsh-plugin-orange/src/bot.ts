@@ -1198,6 +1198,44 @@ export class OrangeBot {
     return { text, ids }
   }
 
+  /** Export enumeration is independent of chat preview limits; never silently omit a subtree. */
+  async forwardImageIds(m: StoredMessage, path: string): Promise<number[]> {
+    if (!/^[1-9]\d*(\.[1-9]\d*)*$/.test(path) || path.split('.').length > 8) throw new Error('invalid forward path')
+    const at = await this.forwardAt(m, path)
+    const root = this.forwardsOf(m)[Number(path.split('.')[0]) - 1]
+    if (!at || !root) throw new Error('no such forward')
+    const ids: number[] = []
+    let visited = 0
+    const walk = async (ref: { locator?: unknown, snapshot?: BundleItem[] }, current: string): Promise<void> => {
+      let position = 0
+      let nested = 0
+      for (const item of await this.bundleItems(ref, m.conv)) {
+        if (++visited > 5000) throw new Error('forward exceeds 5000 messages')
+        for (const part of item.parts) {
+          if (part.type === 'media') {
+            const media = part as BundleMedia
+            const pos = position++
+            if (media.kind !== 'image') continue
+            if (ids.length >= 500) throw new Error('forward exceeds 500 images')
+            ids.push(this.mediaId({
+              source: 'forward', kind: 'image', url: media.url, name: media.name,
+              mime: media.mime ?? media.mimeType,
+              plan: JSON.stringify(this.forwardPlan(root.locator, current, pos, media, { forward: root.title, ts: m.ts, senderName: m.senderName })),
+              conv: m.conv, messageId: m.id, ts: m.ts, senderName: m.senderName,
+            }))
+          } else if (part.type === 'forward') {
+            if (current.split('.').length >= 8) throw new Error('forward exceeds 8 levels')
+            const child = part as BundleForward
+            if (!child.snapshot && child.locator === undefined) throw new Error('nested forward is unavailable')
+            await walk(child, `${current}.${++nested}`)
+          }
+        }
+      }
+    }
+    await walk(at, path)
+    return ids
+  }
+
   private async handleCommand(m: InboundMessage, isAdmin: boolean, text: string): Promise<boolean> {
     const white = WHITE_COMMAND.exec(text)
     if (white) {
@@ -2292,14 +2330,14 @@ export class OrangeBot {
    * we can send, so the twin conversation's copy of the same message is the only source. Which of
    * the two it is cannot be read off the url, so both are tried in turn.
    */
-  async mediaUrl(row: MediaRow): Promise<{ url: string } | { error: string }> {
+  async mediaUrl(row: MediaRow, verify: (url: string) => Promise<unknown> = (url) => this.fetchMedia(url)): Promise<{ url: string } | { error: string }> {
     const plan = parsePlan(row.plan)
     const failed: string[] = []
     /** A url counts as usable only once its bytes actually came back. */
     const attempt = async (label: string, url?: string): Promise<{ url: string } | undefined> => {
       if (!url) return undefined
       try {
-        await this.fetchMedia(url)
+        await verify(url)
         return { url }
       } catch (error) {
         failed.push(`${label}：${(error as Error).message}`)
@@ -2333,12 +2371,19 @@ export class OrangeBot {
 
   /** The url of one attachment of a bundle: picked by position, checked by name when we have one. */
   private async bundleMediaUrl(ref: { locator?: unknown, snapshot?: BundleItem[] }, path: string, position: number, name?: string, conv = 'cg:'): Promise<string | undefined> {
-    const all = await this.bundleMedia(ref, '1', conv)
-    const at = all.filter((m) => m.path === path)
-    const picked = (name ? at.find((m) => sameMedia(m.part.name, name)) : undefined)
-      ?? at.find((m) => m.position === position)
-      ?? (name ? all.find((m) => sameMedia(m.part.name, name)) : undefined)
-    return picked?.part.url
+    // The locator already denotes the top-level forward. Walk only the requested branch,
+    // independent of display depth/preview limits (and of the top-level forward's index).
+    let node = ref
+    for (const step of path.split('.').slice(1)) {
+      const next = (await this.bundleItems(node, conv)).flatMap((item) => item.parts.filter((p) => p.type === 'forward'))[Number(step) - 1] as BundleForward | undefined
+      if (!next) return undefined
+      node = next
+    }
+    const media = (await this.bundleItems(node, conv)).flatMap((item) => item.parts.filter((p) => p.type === 'media')) as BundleMedia[]
+    const at = media[position]
+    const picked = at && (!name || sameMedia(at.name, name)) ? at
+      : (name ? media.find((part) => sameMedia(part.name, name)) : at)
+    return picked?.url
   }
 
   /**
